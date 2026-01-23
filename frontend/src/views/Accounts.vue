@@ -975,8 +975,12 @@ const syncRegisterTask = (task: RegisterTask | null, persist = true) => {
     return
   }
 
-  // 已中断的任务不应长期占用“任务状态”窗口：直接清理缓存与状态
-  if (task.status === 'cancelled') {
+  // 已中断/取消请求相关的任务不应长期占用“任务状态”窗口：直接清理缓存与状态
+  if (
+    task.status === 'cancelled' ||
+    (task.cancel_requested && task.status !== 'running' && task.status !== 'pending') ||
+    Boolean(task.cancel_reason)
+  ) {
     syncRegisterTask(null, persist)
     return
   }
@@ -1004,8 +1008,12 @@ const syncLoginTask = (task: LoginTask | null, persist = true) => {
     return
   }
 
-  // 已中断的任务不应长期占用“任务状态”窗口：直接清理缓存与状态
-  if (task.status === 'cancelled') {
+  // 已中断/取消请求相关的任务不应长期占用“任务状态”窗口：直接清理缓存与状态
+  if (
+    task.status === 'cancelled' ||
+    (task.cancel_requested && task.status !== 'running' && task.status !== 'pending') ||
+    Boolean(task.cancel_reason)
+  ) {
     syncLoginTask(null, persist)
     return
   }
@@ -1786,7 +1794,19 @@ const getTaskStatusIndicatorClass = (task: RegisterTask | LoginTask) => {
 }
 
 const updateRegisterTask = async (taskId: string) => {
-  const task = await accountsApi.getRegisterTask(taskId)
+  let task: RegisterTask
+  try {
+    task = await accountsApi.getRegisterTask(taskId)
+  } catch (error: any) {
+    // 任务已不存在（被清理/过期/后端重启）：静默清理，避免弹窗显示 "Not found"
+    if (error?.status === 404 || error?.message === 'Not found') {
+      syncRegisterTask(null, true)
+      clearRegisterTimer()
+      isRegistering.value = false
+      return
+    }
+    throw error
+  }
   syncRegisterTask(task)
   if (task.status !== 'running' && task.status !== 'pending') {
     isRegistering.value = false
@@ -1815,7 +1835,19 @@ const updateRegisterTask = async (taskId: string) => {
 }
 
 const updateLoginTask = async (taskId: string) => {
-  const task = await accountsApi.getLoginTask(taskId)
+  let task: LoginTask
+  try {
+    task = await accountsApi.getLoginTask(taskId)
+  } catch (error: any) {
+    // 任务已不存在（被清理/过期/后端重启）：静默清理，避免弹窗显示 "Not found"
+    if (error?.status === 404 || error?.message === 'Not found') {
+      syncLoginTask(null, true)
+      clearLoginTimer()
+      isRefreshing.value = false
+      return
+    }
+    throw error
+  }
   syncLoginTask(task)
   if (task.status !== 'running' && task.status !== 'pending') {
     isRefreshing.value = false
@@ -1898,7 +1930,14 @@ const loadCurrentTasks = async () => {
       cleanupCancelledTasks()
     }
   } catch (error: any) {
-    automationError.value = error.message || '加载注册任务失败'
+    // 部分后端实现可能在无任务时返回 404：视为 idle，不提示 "Not found"
+    if (error?.status === 404 || error?.message === 'Not found') {
+      syncRegisterTask(null, true)
+      isRegistering.value = false
+      clearRegisterTimer()
+    } else {
+      automationError.value = error.message || '加载注册任务失败'
+    }
   }
 
   try {
@@ -1915,7 +1954,14 @@ const loadCurrentTasks = async () => {
       cleanupCancelledTasks()
     }
   } catch (error: any) {
-    automationError.value = error.message || '加载刷新任务失败'
+    // 部分后端实现可能在无任务时返回 404：视为 idle，不提示 "Not found"
+    if (error?.status === 404 || error?.message === 'Not found') {
+      syncLoginTask(null, true)
+      isRefreshing.value = false
+      clearLoginTimer()
+    } else {
+      automationError.value = error.message || '加载刷新任务失败'
+    }
   }
 }
 
